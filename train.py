@@ -114,22 +114,39 @@ def build_datasets(
 # ── Loss ──────────────────────────────────────────────────────────────────────
 
 class CombinedLoss(nn.Module):
-    """MSE + cosine-similarity loss for heatmap regression."""
+    """MSE + cosine-similarity + KL-divergence loss for heatmap regression.
 
-    def __init__(self, mse_weight: float = 1.0, cos_weight: float = 0.1):
+    KL divergence treats heatmaps as probability distributions, directly
+    penalising peak displacement and improving angular accuracy.
+    """
+
+    def __init__(self, mse_weight: float = 1.0, cos_weight: float = 0.1,
+                 kl_weight: float = 0.5):
         super().__init__()
         self.mse = nn.MSELoss()
         self.mse_weight = mse_weight
         self.cos_weight = cos_weight
+        self.kl_weight = kl_weight
 
     def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         # pred, target: [B, 72, 37]
         loss = self.mse_weight * self.mse(pred, target)
+
+        p_flat = pred.view(pred.shape[0], -1)
+        t_flat = target.view(target.shape[0], -1)
+
         if self.cos_weight > 0:
-            p_flat = pred.view(pred.shape[0], -1)
-            t_flat = target.view(target.shape[0], -1)
             cos_sim = nn.functional.cosine_similarity(p_flat, t_flat, dim=1)
             loss = loss + self.cos_weight * (1.0 - cos_sim.mean())
+
+        if self.kl_weight > 0:
+            # Normalise to probability distributions, then compute KL(target || pred)
+            p_prob = p_flat / (p_flat.sum(dim=1, keepdim=True) + 1e-8)
+            t_prob = t_flat / (t_flat.sum(dim=1, keepdim=True) + 1e-8)
+            kl = nn.functional.kl_div(
+                torch.log(p_prob + 1e-8), t_prob, reduction='batchmean')
+            loss = loss + self.kl_weight * kl
+
         return loss
 
 
@@ -338,16 +355,16 @@ def _log_sample_heatmaps(writer, model, loader, device, epoch, n=4):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Train BinauralSSLNet')
     parser.add_argument('--data_dir', type=str, default=str(DATA_DIR))
-    parser.add_argument('--batch_size', type=int, default=32)
+    parser.add_argument('--batch_size', type=int, default=256)
     parser.add_argument('--epochs', type=int, default=100)
     parser.add_argument('--lr', type=float, default=1e-3)
-    parser.add_argument('--patience', type=int, default=15)
+    parser.add_argument('--patience', type=int, default=25)
     parser.add_argument('--workers', type=int, default=4)
     parser.add_argument('--train_ratio', type=float, default=0.70,
                         help='Fraction of data for training (default: 0.70)')
     parser.add_argument('--val_ratio', type=float, default=0.15,
                         help='Fraction of data for validation (default: 0.15)')
-    parser.add_argument('--save_steps', type=int, default=500,
+    parser.add_argument('--save_steps', type=int, default=0,
                         help='Save a step checkpoint every N steps (0 to disable)')
     args = parser.parse_args()
 

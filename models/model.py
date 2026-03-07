@@ -30,7 +30,7 @@ MODEL_CONFIG = {
     'time_frames': TIME_FRAMES,
     'n_azimuth': N_AZ,
     'n_elevation': N_EL,
-    'base_channels': 32,
+    'base_channels': 64,
 }
 
 
@@ -45,8 +45,27 @@ class Conv2dBnRelu(nn.Sequential):
         )
 
 
+class SEBlock(nn.Module):
+    """Squeeze-and-Excitation channel attention."""
+    def __init__(self, channels: int, reduction: int = 16):
+        super().__init__()
+        mid = max(channels // reduction, 4)
+        self.se = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten(),
+            nn.Linear(channels, mid, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(mid, channels, bias=False),
+            nn.Sigmoid(),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        w = self.se(x).view(x.shape[0], -1, 1, 1)
+        return x * w
+
+
 class ResBlock2d(nn.Module):
-    """Lightweight residual block for 2D feature maps."""
+    """Residual block with SE channel attention."""
     def __init__(self, channels: int):
         super().__init__()
         self.block = nn.Sequential(
@@ -54,10 +73,11 @@ class ResBlock2d(nn.Module):
             nn.Conv2d(channels, channels, 3, padding=1, bias=False),
             nn.BatchNorm2d(channels),
         )
+        self.se = SEBlock(channels)
         self.relu = nn.ReLU(inplace=True)
 
     def forward(self, x):
-        return self.relu(x + self.block(x))
+        return self.relu(x + self.se(self.block(x)))
 
 
 # ── Main model ───────────────────────────────────────────────────────────────
@@ -76,7 +96,7 @@ class BinauralSSLNet(nn.Module):
         self,
         freq_bins: int = FREQ_BINS,
         time_frames: int = TIME_FRAMES,
-        base_ch: int = 32,
+        base_ch: int = 64,
     ):
         super().__init__()
         self.freq_bins = freq_bins
@@ -99,12 +119,12 @@ class BinauralSSLNet(nn.Module):
         # After conv3d: [B, base_ch, 1, F, T] → squeeze depth → [B, base_ch, F, T]
 
         # ── Stage 2: 2D-CNN ─────────────────────────────────────────────────
-        # With FREQ_BINS≈129, TIME_FRAMES≈29 after 3D-CNN:
-        #   Block1 MaxPool(2): [B, 64,  ~65, ~15]
-        #   Block2 MaxPool(2): [B, 128, ~32, ~7 ]
-        #   Block3 (no pool):  [B, 256, ~32, ~7 ]  ← keep spatial size for AdaptivePool
-        #   Block4:            [B, 256, ~32, ~7 ]
-        #   AdaptiveAvgPool:   [B, 256,   4,  4 ]  ← 7≥4 and 32≥4 ✓
+        # With FREQ_BINS≈129, TIME_FRAMES≈29 after 3D-CNN (base_ch=64):
+        #   Block1 MaxPool(2): [B, 128, ~65, ~15]
+        #   Block2 MaxPool(2): [B, 256, ~32, ~7 ]
+        #   Block3 (no pool):  [B, 512, ~32, ~7 ]  ← keep spatial size for AdaptivePool
+        #   Block4:            [B, 512, ~32, ~7 ]
+        #   AdaptiveAvgPool:   [B, 512,   4,  4 ]  ← 7≥4 and 32≥4 ✓
         self.cnn = nn.Sequential(
             # Block 1
             Conv2dBnRelu(base_ch, base_ch * 2),
@@ -127,18 +147,18 @@ class BinauralSSLNet(nn.Module):
         # Adaptive pooling ensures model works with any input time length
         self.global_pool = nn.AdaptiveAvgPool2d((4, 4))
 
-        flat_size = (base_ch * 8) * 4 * 4  # 256 * 16 = 4096
+        flat_size = (base_ch * 8) * 4 * 4  # 512 * 16 = 8192
 
         # ── Stage 3: FC head ─────────────────────────────────────────────────
         self.head = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(flat_size, 1024),
+            nn.Linear(flat_size, 2048),
             nn.ReLU(inplace=True),
             nn.Dropout(0.3),
-            nn.Linear(1024, 512),
+            nn.Linear(2048, 1024),
             nn.ReLU(inplace=True),
             nn.Dropout(0.2),
-            nn.Linear(512, N_AZ * N_EL),
+            nn.Linear(1024, N_AZ * N_EL),
             nn.Sigmoid(),
         )
 
@@ -153,7 +173,8 @@ class BinauralSSLNet(nn.Module):
                 nn.init.zeros_(m.bias)
             elif isinstance(m, nn.Linear):
                 nn.init.xavier_normal_(m.weight)
-                nn.init.zeros_(m.bias)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
