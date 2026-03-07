@@ -73,8 +73,21 @@ class BinauralSSLDataset(Dataset):
         return torch.from_numpy(feat), torch.from_numpy(hmap)
 
 
-def build_datasets(data_dir: str, train_ratio: float = 0.8):
-    """Discover valid samples and split into train/val sets."""
+def build_datasets(
+    data_dir: str,
+    train_ratio: float = 0.70,
+    val_ratio: float = 0.15,
+):
+    """
+    Discover valid samples and split into train / val / test sets.
+
+    Default split: 70% train, 15% val, 15% test.
+    Returns:
+        (train_ds, val_ds, test_ds)
+    """
+    if train_ratio + val_ratio >= 1.0:
+        raise ValueError("train_ratio + val_ratio must be < 1.0")
+
     audio_dir = Path(data_dir) / 'audio'
     all_indices = sorted([
         int(p.stem) for p in audio_dir.glob('*.wav')
@@ -88,11 +101,14 @@ def build_datasets(data_dir: str, train_ratio: float = 0.8):
 
     rng = np.random.default_rng(RANDOM_SEED)
     rng.shuffle(all_indices := np.array(all_indices))
-    split = int(len(all_indices) * train_ratio)
+    n = len(all_indices)
+    split_train = int(n * train_ratio)
+    split_val   = int(n * (train_ratio + val_ratio))
 
-    train_ds = BinauralSSLDataset(data_dir, all_indices[:split].tolist())
-    val_ds = BinauralSSLDataset(data_dir, all_indices[split:].tolist())
-    return train_ds, val_ds
+    train_ds = BinauralSSLDataset(data_dir, all_indices[:split_train].tolist())
+    val_ds   = BinauralSSLDataset(data_dir, all_indices[split_train:split_val].tolist())
+    test_ds  = BinauralSSLDataset(data_dir, all_indices[split_val:].tolist())
+    return train_ds, val_ds, test_ds
 
 
 # ── Loss ──────────────────────────────────────────────────────────────────────
@@ -148,8 +164,9 @@ def train(args):
     print(f"Device: {device}")
 
     # Datasets
-    train_ds, val_ds = build_datasets(args.data_dir, train_ratio=0.8)
-    print(f"Train: {len(train_ds):,} | Val: {len(val_ds):,}")
+    train_ds, val_ds, test_ds = build_datasets(
+        args.data_dir, train_ratio=args.train_ratio, val_ratio=args.val_ratio)
+    print(f"Train: {len(train_ds):,} | Val: {len(val_ds):,} | Test: {len(test_ds):,}")
 
     train_loader = DataLoader(
         train_ds, batch_size=args.batch_size, shuffle=True,
@@ -326,6 +343,10 @@ if __name__ == '__main__':
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--patience', type=int, default=15)
     parser.add_argument('--workers', type=int, default=4)
+    parser.add_argument('--train_ratio', type=float, default=0.70,
+                        help='Fraction of data for training (default: 0.70)')
+    parser.add_argument('--val_ratio', type=float, default=0.15,
+                        help='Fraction of data for validation (default: 0.15)')
     parser.add_argument('--save_steps', type=int, default=500,
                         help='Save a step checkpoint every N steps (0 to disable)')
     args = parser.parse_args()

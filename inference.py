@@ -1,7 +1,7 @@
 """
 Real-time binaural sound source localization inference.
 
-Processes a binaural WAV file with a sliding window (75% overlap) and
+Processes a binaural WAV file with a sliding window (50% overlap, 64 ms step) and
 displays an animated spherical energy heatmap.
 
 Usage:
@@ -23,7 +23,7 @@ import librosa
 
 from models import BinauralSSLNet
 from utils.audio_processing import (
-    SAMPLE_RATE, FFT_SIZE, HOP_LENGTH,
+    FEATURE_SR, FFT_SIZE, HOP_LENGTH,
     compute_ipd_ild,
 )
 from utils.heatmap_generator import AZ_ANGLES, EL_ANGLES, compute_peak_position
@@ -34,7 +34,7 @@ CHECKPOINT_DIR = BASE_DIR / 'checkpoints'
 
 # ── Audio loading ─────────────────────────────────────────────────────────────
 
-def load_binaural_wav(path: str, target_sr: int = SAMPLE_RATE) -> np.ndarray:
+def load_binaural_wav(path: str, target_sr: int = FEATURE_SR) -> np.ndarray:
     """
     Load a binaural (stereo) audio file.
 
@@ -60,17 +60,17 @@ def load_binaural_wav(path: str, target_sr: int = SAMPLE_RATE) -> np.ndarray:
 
 def sliding_windows(
     audio: np.ndarray,
-    window_ms: int = 100,
-    overlap: float = 0.75,
-    sr: int = SAMPLE_RATE,
+    window_ms: int = 128,
+    overlap: float = 0.5,
+    sr: int = FEATURE_SR,
 ) -> Generator[np.ndarray, None, None]:
     """
     Yield overlapping windows from a binaural audio array.
 
     Args:
         audio:      [2, n_samples]
-        window_ms:  window length in milliseconds
-        overlap:    fractional overlap (0.75 = 75%)
+        window_ms:  window length in milliseconds (default: 128)
+        overlap:    fractional overlap (default: 0.5 → 64 ms step)
     Yields:
         window: [2, window_samples]
     """
@@ -183,15 +183,16 @@ def run_realtime(args):
 
     print(f"Loading audio: {args.audio}")
     audio = load_binaural_wav(args.audio)
-    print(f"  Duration: {audio.shape[1] / SAMPLE_RATE:.2f}s  SR: {SAMPLE_RATE} Hz")
+    print(f"  Duration: {audio.shape[1] / FEATURE_SR:.2f}s  SR: {FEATURE_SR} Hz")
 
     engine = SSLInference(args.model, device=args.device)
 
-    windows = list(sliding_windows(audio, window_ms=args.window_ms, overlap=0.75))
-    print(f"  Windows: {len(windows)} (step={int(args.window_ms * 0.25)} ms)")
+    step_ms = args.window_ms // 2   # 50 % overlap → step = window / 2
+    windows = list(sliding_windows(audio, window_ms=args.window_ms, overlap=0.5))
+    print(f"  Windows: {len(windows)} (step={step_ms} ms)")
 
     # Pre-compute target time frames
-    target_T = 1 + (int(args.window_ms / 1000 * SAMPLE_RATE) - FFT_SIZE) // HOP_LENGTH
+    target_T = 1 + (int(args.window_ms / 1000 * FEATURE_SR) - FFT_SIZE) // HOP_LENGTH
 
     # Pre-compute all heatmaps for smooth playback
     print("Pre-computing heatmaps...")
@@ -231,7 +232,7 @@ def run_realtime(args):
 
     fig, ax, im, peak_dot = setup_matplotlib_animation()
 
-    step_ms = args.window_ms * (1.0 - 0.75)  # ms per frame
+    # step_ms already defined above (window_ms // 2)
     frame_idx = [0]
 
     def update(_):
@@ -267,8 +268,8 @@ if __name__ == '__main__':
     parser.add_argument('--model', type=str,
                         default=str(CHECKPOINT_DIR / 'model_best.pth'),
                         help='Path to model checkpoint')
-    parser.add_argument('--window_ms', type=int, default=100,
-                        help='Analysis window size in ms (default: 100)')
+    parser.add_argument('--window_ms', type=int, default=128,
+                        help='Analysis window size in ms (default: 128)')
     parser.add_argument('--device', type=str,
                         default='cuda' if torch.cuda.is_available() else 'cpu',
                         help='Inference device (default: cuda if available)')

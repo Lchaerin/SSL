@@ -12,20 +12,27 @@ import torch
 import torchaudio
 import librosa
 
-# Spectrogram parameters (matching CLAUDE.md spec)
-FFT_SIZE = 512
-HOP_LENGTH = 256
+# Sample rates
+SAMPLE_RATE = 44100   # HRTF synthesis rate (do not change)
+FEATURE_SR  = 16000   # Downsample to this rate before computing IPD/ILD
+
+# STFT parameters (applied at FEATURE_SR)
+FFT_SIZE    = 256
+HOP_LENGTH  = 64
 WINDOW_TYPE = 'hann'
-SAMPLE_RATE = 44100
+
+# Window / overlap spec
+WINDOW_MS  = 128   # analysis window length  [ms]
+OVERLAP_MS = 64    # step between windows    [ms]  (50 % overlap)
 
 # Derived dimensions
-FREQ_BINS = FFT_SIZE // 2 + 1  # 257
-WINDOW_MS = 100  # milliseconds
-WINDOW_SAMPLES = int(WINDOW_MS / 1000 * SAMPLE_RATE)  # 4410
-TIME_FRAMES = 1 + (WINDOW_SAMPLES - FFT_SIZE) // HOP_LENGTH  # 16
+FREQ_BINS          = FFT_SIZE // 2 + 1                              # 129
+WINDOW_SAMPLES     = int(WINDOW_MS  / 1000 * FEATURE_SR)           # 2048  (at 16 kHz)
+WINDOW_SAMPLES_SYNTH = int(WINDOW_MS / 1000 * SAMPLE_RATE)         # 5644  (at 44100 Hz)
+TIME_FRAMES        = 1 + (WINDOW_SAMPLES - FFT_SIZE) // HOP_LENGTH # 29
 
 
-def load_audio(file_path: str, target_sr: int = SAMPLE_RATE) -> np.ndarray:
+def load_audio(file_path: str, target_sr: int = FEATURE_SR) -> np.ndarray:
     """Load mono audio file and resample if needed. Returns [n_samples] float32 array."""
     audio, sr = librosa.load(file_path, sr=None, mono=True)
     if sr != target_sr:

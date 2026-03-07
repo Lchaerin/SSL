@@ -24,7 +24,7 @@ import soundfile as sf
 from tqdm import tqdm
 
 from utils.audio_processing import (
-    SAMPLE_RATE, WINDOW_SAMPLES, FFT_SIZE, HOP_LENGTH,
+    SAMPLE_RATE, FEATURE_SR, WINDOW_SAMPLES_SYNTH,
     compute_rms_db,
 )
 from utils.hrtf_synthesis import HRTFDatabasePool
@@ -193,9 +193,9 @@ def augment_audio(audio: np.ndarray, sr: int = SAMPLE_RATE) -> np.ndarray:
 
 # ── Sample generation ─────────────────────────────────────────────────────────
 
-# Extra buffer around the window for realistic convolution
-BUFFER_SAMPLES = SAMPLE_RATE // 5   # 200 ms
-MIX_LENGTH = WINDOW_SAMPLES + 2 * BUFFER_SAMPLES
+# Extra buffer around the window for realistic HRTF convolution (at 44100 Hz)
+BUFFER_SAMPLES = SAMPLE_RATE // 5                        # 200 ms at 44100 Hz
+MIX_LENGTH     = WINDOW_SAMPLES_SYNTH + 2 * BUFFER_SAMPLES
 
 
 def generate_one_sample(
@@ -214,7 +214,7 @@ def generate_one_sample(
     n_sources = sample_n_sources()
     positions = sample_source_positions(n_sources)
 
-    binaural_mix = np.zeros((2, MIX_LENGTH), dtype=np.float32)
+    binaural_mix = np.zeros((2, MIX_LENGTH), dtype=np.float32)  # at SAMPLE_RATE (44100 Hz)
     active_sources: List[Tuple[float, float, float]] = []
     hrtf_db = hrtf_pool.get_random()
 
@@ -246,9 +246,15 @@ def generate_one_sample(
     if peak > 1e-6:
         binaural_mix /= peak
 
-    # Extract centre window where all sources overlap
+    # Extract centre window (at 44100 Hz) where all sources overlap
     start = BUFFER_SAMPLES
-    window = binaural_mix[:, start:start + WINDOW_SAMPLES]
+    window_synth = binaural_mix[:, start:start + WINDOW_SAMPLES_SYNTH]  # [2, 5644]
+
+    # Downsample to FEATURE_SR (16 kHz) for feature extraction and storage
+    window = np.stack([
+        librosa.resample(window_synth[0], orig_sr=SAMPLE_RATE, target_sr=FEATURE_SR),
+        librosa.resample(window_synth[1], orig_sr=SAMPLE_RATE, target_sr=FEATURE_SR),
+    ], axis=0)  # [2, 2048]
 
     # Generate ground truth heatmap
     heatmap = generate_heatmap(active_sources)   # [72, 37]
@@ -284,9 +290,9 @@ def generate_dataset(n_samples: int = 30_000, augment: bool = True):
             window, heatmap, sources = generate_one_sample(
                 audio_cache, hrtf_pool, augment=do_aug)
 
-            # Save binaural audio (.wav) and ground truth heatmap (.npy)
-            # window: [2, samples] → soundfile expects [samples, channels]
-            sf.write(AUDIO_DIR / f'{i:06d}.wav', window.T, SAMPLE_RATE)
+            # Save binaural audio (.wav) at FEATURE_SR (16 kHz) and ground truth heatmap (.npy)
+            # window: [2, 2048] → soundfile expects [samples, channels]
+            sf.write(AUDIO_DIR / f'{i:06d}.wav', window.T, FEATURE_SR)
             np.save(HEATMAPS_DIR / f'{i:06d}.npy', heatmap)
 
             metadata.append({

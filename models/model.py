@@ -22,8 +22,8 @@ import torch.nn as nn
 # ── Grid constants ──────────────────────────────────────────────────────────
 N_AZ = 72
 N_EL = 37
-FREQ_BINS = 257   # FFT_SIZE=512 → 257 one-sided bins
-TIME_FRAMES = 16  # ~100 ms at 44100 Hz with hop=256
+FREQ_BINS   = 129  # FFT_SIZE=256 → 129 one-sided bins
+TIME_FRAMES = 29   # 128 ms window at 16 kHz, FFT_SIZE=256, hop=64
 
 MODEL_CONFIG = {
     'freq_bins': FREQ_BINS,
@@ -99,21 +99,26 @@ class BinauralSSLNet(nn.Module):
         # After conv3d: [B, base_ch, 1, F, T] → squeeze depth → [B, base_ch, F, T]
 
         # ── Stage 2: 2D-CNN ─────────────────────────────────────────────────
+        # With FREQ_BINS≈129, TIME_FRAMES≈29 after 3D-CNN:
+        #   Block1 MaxPool(2): [B, 64,  ~65, ~15]
+        #   Block2 MaxPool(2): [B, 128, ~32, ~7 ]
+        #   Block3 (no pool):  [B, 256, ~32, ~7 ]  ← keep spatial size for AdaptivePool
+        #   Block4:            [B, 256, ~32, ~7 ]
+        #   AdaptiveAvgPool:   [B, 256,   4,  4 ]  ← 7≥4 and 32≥4 ✓
         self.cnn = nn.Sequential(
             # Block 1
             Conv2dBnRelu(base_ch, base_ch * 2),
             ResBlock2d(base_ch * 2),
-            nn.MaxPool2d(2),                         # [B, 64, F/2, T/2]
+            nn.MaxPool2d(2),                         # freq/2, time/2
 
             # Block 2
             Conv2dBnRelu(base_ch * 2, base_ch * 4),
             ResBlock2d(base_ch * 4),
-            nn.MaxPool2d(2),                         # [B, 128, F/4, T/4]
+            nn.MaxPool2d(2),                         # freq/4, time/4
 
-            # Block 3
+            # Block 3  (no MaxPool — time dim is ~7, too small for another /2)
             Conv2dBnRelu(base_ch * 4, base_ch * 8),
             ResBlock2d(base_ch * 8),
-            nn.MaxPool2d(2),                         # [B, 256, F/8, T/8]
 
             # Block 4
             Conv2dBnRelu(base_ch * 8, base_ch * 8),

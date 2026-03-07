@@ -81,11 +81,12 @@ def evaluate(args):
     model.eval()
     print(f"Loaded checkpoint: {args.checkpoint}")
 
-    # Load validation set
-    _, val_ds = build_datasets(args.data_dir, train_ratio=0.8)
-    print(f"Validation samples: {len(val_ds):,}")
+    # Load test set (same split ratios used during training)
+    _, _, test_ds = build_datasets(
+        args.data_dir, train_ratio=args.train_ratio, val_ratio=args.val_ratio)
+    print(f"Test samples: {len(test_ds):,}")
 
-    val_loader = DataLoader(val_ds, batch_size=args.batch_size,
+    val_loader = DataLoader(test_ds, batch_size=args.batch_size,
                             shuffle=False, num_workers=2)
 
     # Load metadata for condition breakdown
@@ -122,7 +123,7 @@ def evaluate(args):
             all_ang_err.append(err)
 
     # ── Per-condition breakdown from metadata ─────────────────────────────
-    val_indices = val_ds.indices
+    val_indices = test_ds.indices
     for i, idx in enumerate(val_indices):
         if idx not in metadata:
             continue
@@ -146,7 +147,7 @@ def evaluate(args):
     lines = []
     lines.append('# Binaural SSL Evaluation Report\n')
     lines.append(f'Checkpoint: `{args.checkpoint}`\n')
-    lines.append(f'Validation samples: {len(all_mse):,}\n')
+    lines.append(f'Test samples: {len(all_mse):,}\n')
     lines.append('')
 
     lines.append('## Overall Metrics\n')
@@ -180,7 +181,7 @@ def evaluate(args):
     mean_err_2src = np.mean(cond_ang_err.get('n_sources=2', [float('nan')]))
     print(f"\nSuccess criterion (2-source angular error < 10°): ", end='')
     if np.isnan(mean_err_2src):
-        print("N/A (no 2-source samples in val set)")
+        print("N/A (no 2-source samples in test set)")
     elif mean_err_2src < 10.0:
         print(f"PASS ({mean_err_2src:.2f}°)")
     else:
@@ -195,6 +196,10 @@ if __name__ == '__main__':
                         default=str(CHECKPOINT_DIR / 'model_best.pth'))
     parser.add_argument('--data_dir', type=str, default=str(DATA_DIR))
     parser.add_argument('--batch_size', type=int, default=64)
+    parser.add_argument('--train_ratio', type=float, default=0.70,
+                        help='Must match the ratio used during training (default: 0.70)')
+    parser.add_argument('--val_ratio', type=float, default=0.15,
+                        help='Must match the ratio used during training (default: 0.15)')
     parser.add_argument('--out', type=str, default='evaluation_report.md',
                         help='Path to save the markdown report')
     args = parser.parse_args()
